@@ -99,9 +99,28 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		rows = params.Rows
 	}
 
-	// Request PTY
+	// Full terminal mode set — equivalent to what openssh derives from tcgetattr.
+	// Omitting modes leaves them at server-side defaults which vary; being
+	// explicit avoids missing ONLCR (causes "%" after every command) and
+	// missing ICRNL/ICANON/ISIG (causes cursor-key misalignment in btop/vim).
 	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,
+		// Input flags
+		ssh.ICRNL:  1, // CR → NL on input (enter key works)
+		ssh.IXON:   1, // XON/XOFF flow control
+		ssh.IUTF8:  1, // UTF-8 input
+		// Output flags
+		ssh.OPOST:  1, // post-process output
+		ssh.ONLCR:  1, // NL → CR+NL on output (fixes "%" after commands)
+		// Control flags
+		ssh.CS8:    1, // 8-bit characters
+		// Local flags
+		ssh.ECHO:   1, // echo input characters
+		ssh.ECHOE:  1, // echo erase as BS-SP-BS
+		ssh.ECHOK:  1, // echo kill character
+		ssh.ICANON: 1, // canonical mode (line editing)
+		ssh.ISIG:   1, // signals: Ctrl-C → SIGINT, Ctrl-Z → SIGTSTP
+		ssh.IEXTEN: 1, // extended processing
+		// Speeds
 		ssh.TTY_OP_ISPEED: 38400,
 		ssh.TTY_OP_OSPEED: 38400,
 	}

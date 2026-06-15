@@ -65,22 +65,38 @@ connectForm.addEventListener("submit", async (e) => {
 
   localStorage.setItem("ssh:username", username);
 
+  // ── Wait for the Nerd Font before showing terminal ───────────────────────
+  // JetBrainsMonoNF loads async from CDN. If we let the terminal measure
+  // character size before the font is ready, the fallback font's dimensions
+  // are used, then a resize fires when the real font swaps in — mid-session
+  // SIGWINCH corrupts full-screen apps like btop and vim.
+  await document.fonts.load('400 14px "JetBrainsMonoNF"').catch(() => {});
+
   // ── Init terminal first so we know the actual cols/rows ───────────────────
   formView.style.display     = "none";
   terminalView.style.display = "flex";
   connLabel.textContent      = `${username}@${host}:${port}`;
 
+  // Track the last size sent to the server so we never emit a RESIZE that
+  // matches the initial params — a no-op RESIZE mid-startup triggers an
+  // unnecessary SIGWINCH that corrupts vim's initial render.
+  let lastSentCols = 0;
+  let lastSentRows = 0;
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
   term = new WTerm(terminalEl, {
     onData: (data) => ws?.send(data),
-    // Debounce: only send the final size after 150 ms of no further changes.
-    // This prevents flooding vim/tmux with SIGWINCH during a window drag.
+    // Debounce resize: wait 150 ms after the last event (avoids SIGWINCH flood
+    // while dragging), then only send if the size actually changed.
     onResize: (cols, rows) => {
       if (resizeTimer) clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
-        if (ws?.readyState === WebSocket.OPEN)
+        if (ws?.readyState === WebSocket.OPEN
+            && (cols !== lastSentCols || rows !== lastSentRows)) {
+          lastSentCols = cols;
+          lastSentRows = rows;
           ws.send(`\x1b[RESIZE:${cols};${rows}]`);
+        }
       }, 150);
     },
   });
@@ -92,10 +108,12 @@ connectForm.addEventListener("submit", async (e) => {
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
+    lastSentCols = term!.cols;
+    lastSentRows = term!.rows;
     const params: Record<string, unknown> = {
       host, port, username,
-      cols: term!.cols,
-      rows: term!.rows,
+      cols: lastSentCols,
+      rows: lastSentRows,
     };
     if (authMethodEl.value === "privateKey") {
       params.privateKey = privateKeyEl.value.trim();
