@@ -11,7 +11,7 @@ pkgs.mkShell {
 
     # frontend
     pkgs.nodejs
-    pkgs.nodePackages.pnpm
+    pkgs.pnpm
 
     # ssh bridge runtime deps (also needed locally to test)
     pkgs.openssh
