@@ -65,14 +65,38 @@ connectForm.addEventListener("submit", async (e) => {
 
   localStorage.setItem("ssh:username", username);
 
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const wsUrl = `${proto}//${location.host}/ws`;
+  // ── Init terminal first so we know the actual cols/rows ───────────────────
+  formView.style.display     = "none";
+  terminalView.style.display = "flex";
+  connLabel.textContent      = `${username}@${host}:${port}`;
 
-  ws = new WebSocket(wsUrl);
+  let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  term = new WTerm(terminalEl, {
+    onData: (data) => ws?.send(data),
+    // Debounce: only send the final size after 150 ms of no further changes.
+    // This prevents flooding vim/tmux with SIGWINCH during a window drag.
+    onResize: (cols, rows) => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (ws?.readyState === WebSocket.OPEN)
+          ws.send(`\x1b[RESIZE:${cols};${rows}]`);
+      }, 150);
+    },
+  });
+  await term.init();
+
+  // ── Now open WebSocket — term.cols/rows are guaranteed correct ────────────
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
-    const params: Record<string, unknown> = { host, port, username };
+    const params: Record<string, unknown> = {
+      host, port, username,
+      cols: term!.cols,
+      rows: term!.rows,
+    };
     if (authMethodEl.value === "privateKey") {
       params.privateKey = privateKeyEl.value.trim();
     } else {
@@ -86,14 +110,11 @@ connectForm.addEventListener("submit", async (e) => {
     if (event.data instanceof ArrayBuffer) {
       term.write(new Uint8Array(event.data as ArrayBuffer));
     } else {
-      // Check for JSON error from server before terminal is shown
       const data = event.data as string;
-      if (!terminalView.style.display || terminalView.style.display === "none") {
-        try {
-          const msg = JSON.parse(data);
-          if (msg.error) { showError(msg.error); ws?.close(); return; }
-        } catch { /* not JSON */ }
-      }
+      try {
+        const msg = JSON.parse(data);
+        if (msg.error) { showError(msg.error); ws?.close(); return; }
+      } catch { /* not JSON, regular terminal data */ }
       term.write(data);
     }
   };
@@ -101,26 +122,13 @@ connectForm.addEventListener("submit", async (e) => {
   ws.onerror = () => showError("WebSocket connection failed.");
 
   ws.onclose = () => {
-    if (term) {
-      term.write("\r\n\x1b[31m[disconnected]\x1b[0m\r\n");
-    }
-    // If we never got to the terminal view, show form again
-    if (terminalView.style.display === "none" || !terminalView.style.display) {
-      showError("Connection closed.");
+    if (term) term.write("\r\n\x1b[31m[disconnected]\x1b[0m\r\n");
+    if (terminalView.style.display !== "none") {
+      // leave terminal visible so user can read the disconnect message
     }
     ws = null;
   };
 
-  // Switch to terminal view and init WTerm
-  formView.style.display      = "none";
-  terminalView.style.display  = "flex";
-  connLabel.textContent       = `${username}@${host}:${port}`;
-
-  term = new WTerm(terminalEl, {
-    onData:   (data) => ws?.send(data),
-    onResize: (cols, rows) => ws?.send(`\x1b[RESIZE:${cols};${rows}]`),
-  });
-  await term.init();
   term.focus();
 });
 

@@ -24,6 +24,8 @@ type ConnectParams struct {
 	Username   string `json:"username"`
 	Password   string `json:"password"`
 	PrivateKey string `json:"privateKey"`
+	Cols       int    `json:"cols"`
+	Rows       int    `json:"rows"`
 }
 
 func wsHandler(w http.ResponseWriter, r *http.Request) {
@@ -87,13 +89,23 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer session.Close()
 
+	// Use terminal dimensions from params, fall back to 80x24
+	cols := 80
+	rows := 24
+	if params.Cols > 0 {
+		cols = params.Cols
+	}
+	if params.Rows > 0 {
+		rows = params.Rows
+	}
+
 	// Request PTY
 	modes := ssh.TerminalModes{
 		ssh.ECHO:          1,
 		ssh.TTY_OP_ISPEED: 38400,
 		ssh.TTY_OP_OSPEED: 38400,
 	}
-	if err := session.RequestPty("xterm-256color", 24, 80, modes); err != nil {
+	if err := session.RequestPty("xterm-256color", rows, cols, modes); err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"pty: `+err.Error()+`"}`))
 		return
 	}
