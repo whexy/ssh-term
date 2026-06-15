@@ -5,6 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SSH Terminal</title>
     <style>
+      @font-face {
+        font-family: 'JetBrainsMonoNF';
+        src: url('https://cdn.jsdelivr.net/gh/ryanoasis/nerd-fonts@v3.3.0/patched-fonts/JetBrainsMono/Ligatures/Regular/JetBrainsMonoNerdFont-Regular.woff2') format('woff2');
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: 'JetBrainsMonoNF';
+        src: url('https://cdn.jsdelivr.net/gh/ryanoasis/nerd-fonts@v3.3.0/patched-fonts/JetBrainsMono/Ligatures/Bold/JetBrainsMonoNerdFont-Bold.woff2') format('woff2');
+        font-weight: 700;
+        font-style: normal;
+        font-display: swap;
+      }
+
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
       body {
@@ -145,7 +160,7 @@
 
       #topbar button:hover { color: #e6edf3; border-color: #8b949e; }
 
-      #terminal-el { flex: 1; overflow: hidden; }
+      #terminal-el { flex: 1; overflow: hidden; --term-font-family: 'JetBrainsMonoNF', 'JetBrains Mono', monospace; }
     </style>
   </head>
   <body>
