@@ -139,6 +139,10 @@ connectForm.addEventListener("submit", async (e) => {
 
   ws.onmessage = (event: MessageEvent) => {
     if (!term) return;
+    // Snapshot alt-screen state BEFORE the write so we can detect the
+    // transition. WASM executes synchronously, so the flag is updated by the
+    // time write() returns.
+    const wasAlt = term.bridge?.usingAltScreen() ?? false;
     if (event.data instanceof ArrayBuffer) {
       term.write(new Uint8Array(event.data as ArrayBuffer));
     } else {
@@ -148,6 +152,19 @@ connectForm.addEventListener("submit", async (e) => {
         if (msg.error) { showError(msg.error); ws?.close(); return; }
       } catch { /* not JSON, regular terminal data */ }
       term.write(data);
+    }
+    // Fix: when leaving the alt screen (vim / less / bat / btop exit), the
+    // renderer only repaints rows the core marks dirty — rows whose content
+    // happens to match the primary screen are skipped, leaving stale alt-screen
+    // DOM nodes visible permanently (not fixable with reset(1) either).
+    // Calling resize() with the current dimensions triggers renderer.setup(),
+    // which clears all row innerHTML and forces a full repaint from the core.
+    // onResize is nulled temporarily so the remote PTY gets no SIGWINCH.
+    if (wasAlt && !(term.bridge?.usingAltScreen() ?? false)) {
+      const savedResize = term.onResize;
+      term.onResize = null;
+      term.resize(term.cols, term.rows);
+      term.onResize = savedResize;
     }
   };
 
