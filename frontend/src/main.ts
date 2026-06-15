@@ -33,7 +33,7 @@ authMethodEl.addEventListener("change", () => {
 // ── State ─────────────────────────────────────────────────────────────────────
 let ws: WebSocket | null = null;
 let term: WTerm | null = null;
-const decoder = new TextDecoder("latin1");
+
 
 function showError(msg: string) {
   errorMsg.textContent = msg;
@@ -84,7 +84,7 @@ connectForm.addEventListener("submit", async (e) => {
   ws.onmessage = (event: MessageEvent) => {
     if (!term) return;
     if (event.data instanceof ArrayBuffer) {
-      term.write(decoder.decode(event.data));
+      term.write(new Uint8Array(event.data as ArrayBuffer));
     } else {
       // Check for JSON error from server before terminal is shown
       const data = event.data as string;
