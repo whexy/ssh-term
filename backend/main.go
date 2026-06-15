@@ -163,6 +163,20 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// cacheHandler sets Cache-Control headers:
+//   - HTML → no-cache (always revalidate; picks up new hashed asset URLs)
+//   - Everything else → immutable 1-year (content-hashed by Vite, safe to cache forever)
+func cacheHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".html") || r.URL.Path == "/" {
+			w.Header().Set("Cache-Control", "no-cache")
+		} else {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	staticDir := os.Getenv("STATIC_DIR")
 	if staticDir == "" {
@@ -173,7 +187,7 @@ func main() {
 		port = "8080"
 	}
 
-	http.Handle("/", http.FileServer(http.Dir(staticDir)))
+	http.Handle("/", cacheHandler(http.FileServer(http.Dir(staticDir))))
 	http.HandleFunc("/ws", wsHandler)
 
 	log.Printf("listening :%s  static=%s", port, staticDir)
