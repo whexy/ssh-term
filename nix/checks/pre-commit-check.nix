@@ -11,6 +11,10 @@ inputs.git-hooks.lib.${pkgs.stdenv.hostPlatform.system}.run {
       enable = true;
       package = treefmtEval.config.build.wrapper;
     };
-    golangci-lint.enable = true;
+    golangci-lint = {
+      enable = true;
+      entry = "bash -c 'cd backend && golangci-lint run ./...'";
+      pass_filenames = false;
+    };
   };
 }

@@ -13,9 +13,8 @@ pkgs.mkShell {
     pkgs.nodejs
     pkgs.pnpm
 
-    # ssh bridge runtime deps (also needed locally to test)
+    # ssh bridge — openssh still useful for key generation / manual testing
     pkgs.openssh
-    pkgs.sshpass
   ];
 
   # Add environment variables

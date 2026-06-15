@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/crypto/ssh"
 )
 
 var upgrader = websocket.Upgrader{
@@ -46,66 +47,80 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		params.Port = 22
 	}
 
-	// Build ssh args. -tt forces remote PTY allocation even without a local tty.
-	args := []string{
-		"-tt",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-p", strconv.Itoa(params.Port),
-	}
-
+	// Build auth methods
+	var authMethods []ssh.AuthMethod
 	if params.PrivateKey != "" {
-		f, err := os.CreateTemp("", "ssh-key-*")
+		signer, err := ssh.ParsePrivateKey([]byte(params.PrivateKey))
 		if err != nil {
-			conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"key file error"}`))
+			conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"invalid private key: `+err.Error()+`"}`))
 			return
 		}
-		defer os.Remove(f.Name())
-		f.WriteString(params.PrivateKey)
-		f.Close()
-		os.Chmod(f.Name(), 0600)
-		args = append(args, "-i", f.Name())
+		authMethods = append(authMethods, ssh.PublicKeys(signer))
+	}
+	if params.Password != "" {
+		authMethods = append(authMethods, ssh.Password(params.Password))
+	}
+	if len(authMethods) == 0 {
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"no auth method provided"}`))
+		return
 	}
 
-	args = append(args, params.Username+"@"+params.Host)
-
-	var cmd *exec.Cmd
-	if params.Password != "" && params.PrivateKey == "" {
-		cmd = exec.Command("sshpass", append([]string{"-p", params.Password, "ssh"}, args...)...)
-	} else {
-		cmd = exec.Command("ssh", args...)
+	// Dial SSH
+	config := &ssh.ClientConfig{
+		User:            params.Username,
+		Auth:            authMethods,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec
 	}
-
-	// Use plain pipes — no local PTY, so no local echo or line-discipline interference.
-	// The remote PTY (allocated by -tt) handles all terminal processing.
-	stdinPipe, err := cmd.StdinPipe()
+	addr := net.JoinHostPort(params.Host, strconv.Itoa(params.Port))
+	client, err := ssh.Dial("tcp", addr, config)
 	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"`+err.Error()+`"}`))
 		return
 	}
+	defer client.Close()
 
-	// Merge stdout+stderr into a single pipe so the browser sees everything.
-	pr, pw := io.Pipe()
-	cmd.Stdout = pw
-	cmd.Stderr = pw
-
-	if err := cmd.Start(); err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"`+err.Error()+`"}`))
+	// Open session
+	session, err := client.NewSession()
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"session: `+err.Error()+`"}`))
 		return
 	}
-	defer func() {
-		cmd.Process.Kill()
-		stdinPipe.Close()
-		pw.Close()
-	}()
+	defer session.Close()
 
-	// Close write end of pipe when ssh exits so the reader goroutine unblocks.
+	// Request PTY
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 38400,
+		ssh.TTY_OP_OSPEED: 38400,
+	}
+	if err := session.RequestPty("xterm-256color", 24, 80, modes); err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"pty: `+err.Error()+`"}`))
+		return
+	}
+
+	// Wire up stdin and merged stdout+stderr
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"stdin: `+err.Error()+`"}`))
+		return
+	}
+
+	pr, pw := io.Pipe()
+	session.Stdout = pw
+	session.Stderr = pw
+
+	if err := session.Shell(); err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"shell: `+err.Error()+`"}`))
+		return
+	}
+
+	// Close pipe write end when the session exits so the reader unblocks
 	go func() {
-		cmd.Wait()
+		session.Wait()
 		pw.Close()
 	}()
 
-	// ssh output → WebSocket
+	// SSH → WebSocket
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -119,10 +134,11 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-		conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 	}()
 
-	// WebSocket → ssh stdin
+	// WebSocket → SSH (data + resize)
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -130,12 +146,19 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		s := string(msg)
 		if strings.HasPrefix(s, "\x1b[RESIZE:") {
-			// Resize not yet supported in pipe mode — remote PTY stays at initial size.
-			// TODO: send SSH channel window-change request.
-			continue
-		}
-		if _, err := stdinPipe.Write(msg); err != nil {
-			break
+			inner := strings.TrimSuffix(s[len("\x1b[RESIZE:"):], "]")
+			parts := strings.SplitN(inner, ";", 2)
+			if len(parts) == 2 {
+				cols, _ := strconv.Atoi(parts[0])
+				rows, _ := strconv.Atoi(parts[1])
+				if cols > 0 && rows > 0 {
+					session.WindowChange(rows, cols)
+				}
+			}
+		} else {
+			if _, err := stdin.Write(msg); err != nil {
+				break
+			}
 		}
 	}
 }

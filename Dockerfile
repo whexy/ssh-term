@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o ssh-backend .
 
 # Stage 3: minimal runtime
 FROM alpine:3.21
-RUN apk add --no-cache openssh-client sshpass
+RUN apk add --no-cache ca-certificates
 COPY --from=backend  /app/ssh-backend /app/ssh-backend
 COPY --from=frontend /app/dist        /app/dist
 ENV STATIC_DIR=/app/dist PORT=8080
