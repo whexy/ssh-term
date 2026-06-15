@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ssh-term
+  namespace: ssh-term
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ssh-term
+  template:
+    metadata:
+      labels:
+        app: ssh-term
+    spec:
+      containers:
+        - name: ssh-term
+          image: ghcr.io/whexy/ssh-term:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: STATIC_DIR
+              value: /app/dist
+            - name: PORT
+              value: "8080"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ssh-term
+  namespace: ssh-term
+spec:
+  selector:
+    app: ssh-term
+  ports:
+    - port: 8080
+      targetPort: 8080
