@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -9,9 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
-	"golang.org/x/term"
 )
 
 var upgrader = websocket.Upgrader{
@@ -38,7 +37,6 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-
 	var params ConnectParams
 	if err := json.Unmarshal(msg, &params); err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"invalid params"}`))
@@ -48,7 +46,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		params.Port = 22
 	}
 
-	// Build ssh args
+	// Build ssh args. -tt forces remote PTY allocation even without a local tty.
 	args := []string{
 		"-tt",
 		"-o", "StrictHostKeyChecking=no",
@@ -56,7 +54,6 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		"-p", strconv.Itoa(params.Port),
 	}
 
-	// Key auth: write to temp file
 	if params.PrivateKey != "" {
 		f, err := os.CreateTemp("", "ssh-key-*")
 		if err != nil {
@@ -74,34 +71,47 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var cmd *exec.Cmd
 	if params.Password != "" && params.PrivateKey == "" {
-		// sshpass for password auth
 		cmd = exec.Command("sshpass", append([]string{"-p", params.Password, "ssh"}, args...)...)
 	} else {
 		cmd = exec.Command("ssh", args...)
 	}
 
-	ptmx, err := pty.Start(cmd)
+	// Use plain pipes — no local PTY, so no local echo or line-discipline interference.
+	// The remote PTY (allocated by -tt) handles all terminal processing.
+	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"`+err.Error()+`"}`))
+		return
+	}
+
+	// Merge stdout+stderr into a single pipe so the browser sees everything.
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+
+	if err := cmd.Start(); err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"`+err.Error()+`"}`))
 		return
 	}
 	defer func() {
 		cmd.Process.Kill()
-		ptmx.Close()
+		stdinPipe.Close()
+		pw.Close()
 	}()
 
-	// Raw mode: disable local PTY echo so only the remote SSH PTY echoes.
-	term.MakeRaw(int(ptmx.Fd()))
+	// Close write end of pipe when ssh exits so the reader goroutine unblocks.
+	go func() {
+		cmd.Wait()
+		pw.Close()
+	}()
 
-	pty.Setsize(ptmx, &pty.Winsize{Rows: 24, Cols: 80})
-
-	// ssh → WebSocket
+	// ssh output → WebSocket
 	go func() {
 		buf := make([]byte, 4096)
 		for {
-			n, err := ptmx.Read(buf)
+			n, err := pr.Read(buf)
 			if n > 0 {
-				if err := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
+				if werr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
 					break
 				}
 			}
@@ -109,9 +119,10 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
+		conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 	}()
 
-	// WebSocket → ssh (handle resize frames)
+	// WebSocket → ssh stdin
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -119,17 +130,12 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		s := string(msg)
 		if strings.HasPrefix(s, "\x1b[RESIZE:") {
-			inner := strings.TrimSuffix(s[len("\x1b[RESIZE:"):], "]")
-			parts := strings.SplitN(inner, ";", 2)
-			if len(parts) == 2 {
-				cols, _ := strconv.Atoi(parts[0])
-				rows, _ := strconv.Atoi(parts[1])
-				if cols > 0 && rows > 0 {
-					pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
-				}
-			}
-		} else {
-			ptmx.Write(msg)
+			// Resize not yet supported in pipe mode — remote PTY stays at initial size.
+			// TODO: send SSH channel window-change request.
+			continue
+		}
+		if _, err := stdinPipe.Write(msg); err != nil {
+			break
 		}
 	}
 }

@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: ssh-term
-          image: ghcr.io/whexy/ssh-term:v0.1.1
+          image: ghcr.io/whexy/ssh-term:v0.1.2
           ports:
             - containerPort: 8080
           env:
