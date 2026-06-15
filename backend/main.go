@@ -11,6 +11,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
+	"golang.org/x/term"
 )
 
 var upgrader = websocket.Upgrader{
@@ -88,6 +89,9 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		cmd.Process.Kill()
 		ptmx.Close()
 	}()
+
+	// Raw mode: disable local PTY echo so only the remote SSH PTY echoes.
+	term.MakeRaw(int(ptmx.Fd()))
 
 	pty.Setsize(ptmx, &pty.Winsize{Rows: 24, Cols: 80})
 
