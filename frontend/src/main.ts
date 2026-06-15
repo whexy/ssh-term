@@ -1,4 +1,5 @@
 import { WTerm } from "@wterm/dom";
+import { GhosttyCore } from "@wterm/ghostty";
 import "@wterm/dom/css";
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -65,12 +66,24 @@ connectForm.addEventListener("submit", async (e) => {
 
   localStorage.setItem("ssh:username", username);
 
-  // ── Wait for the Nerd Font before showing terminal ───────────────────────
-  // JetBrainsMonoNF loads async from CDN. If we let the terminal measure
-  // character size before the font is ready, the fallback font's dimensions
-  // are used, then a resize fires when the real font swaps in — mid-session
-  // SIGWINCH corrupts full-screen apps like btop and vim.
-  await document.fonts.load('400 14px "JetBrainsMonoNF"').catch(() => {});
+  // ── Load Ghostty core + Nerd Font in parallel ─────────────────────────────
+  // GhosttyCore provides full VT emulation via libghostty (fixes scroll-region
+  // corruption in vim/less/bat/btop/fzf-tab and the spurious zsh "%" marker).
+  // Fetching the ~420 KB WASM and the font together avoids adding latency.
+  let core: GhosttyCore;
+  try {
+    [core] = await Promise.all([
+      GhosttyCore.load(),
+      // JetBrainsMonoNF loads async from CDN. If we let the terminal measure
+      // character size before the font is ready, the fallback font's dimensions
+      // are used, then a resize fires when the real font swaps in — mid-session
+      // SIGWINCH corrupts full-screen apps like btop and vim.
+      document.fonts.load('400 14px "JetBrainsMonoNF"').catch(() => {}),
+    ]);
+  } catch (err) {
+    showError(`Failed to load terminal emulator: ${err}`);
+    return;
+  }
 
   // ── Init terminal first so we know the actual cols/rows ───────────────────
   formView.style.display     = "none";
@@ -85,6 +98,7 @@ connectForm.addEventListener("submit", async (e) => {
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
   term = new WTerm(terminalEl, {
+    core,
     onData: (data) => ws?.send(data),
     // Debounce resize: wait 150 ms after the last event (avoids SIGWINCH flood
     // while dragging), then only send if the size actually changed.
