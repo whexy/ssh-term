@@ -4,6 +4,12 @@ WORKDIR /app
 COPY frontend/package*.json ./
 RUN npm install
 COPY frontend/ .
+# Apply patched WASM — fixes vercel-labs/wterm#86 (stale SGR from alt-screen
+# leaks into primary screen after DECRST 1049, i.e. ghost vim background).
+# npm install runs before this COPY so we patch the installed binary in-place.
+# Rebuild the WASM: clone vercel-labs/wterm, fix wasm_api.zig per issue #86,
+# run scripts/build-wasm.sh (requires zig_0_15), copy output here.
+RUN cp patches/ghostty-vt.wasm node_modules/@wterm/ghostty/wasm/ghostty-vt.wasm
 RUN npm run build
 
 # Stage 2: build Go backend
