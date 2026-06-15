@@ -1,3 +1,12 @@
 *.exe
 ssh-term
 ssh-backend
+
+# frontend build artifacts
+frontend/dist/
+frontend/node_modules/
+frontend/package-lock.json
+
+# nix / direnv
+.direnv/
+.envrc
